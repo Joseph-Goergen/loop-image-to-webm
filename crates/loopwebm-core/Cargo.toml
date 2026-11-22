@@ -1,0 +1,16 @@
+[package]
+name = "loopwebm-core"
+description = "Turn a still image into a seamless horizontally scrolling VP9 WebM loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+links = "vpx"
+
+[dependencies]
+image.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+cc = "1"

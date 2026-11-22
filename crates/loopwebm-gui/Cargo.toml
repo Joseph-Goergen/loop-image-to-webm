@@ -1,0 +1,17 @@
+[package]
+name = "loopwebm-gui"
+description = "Desktop app: turn an image into a seamless scrolling WebM loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "loopwebm-gui"
+path = "src/main.rs"
+
+[dependencies]
+loopwebm-core.workspace = true
+image.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+rfd = "0.18"

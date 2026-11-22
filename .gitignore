@@ -1,0 +1,51 @@
+# --- Build output -----------------------------------------------------------
+# Cargo build directory (local builds; Docker builds use a named volume)
+/target
+# Collected binaries from scripts/build.sh: dist/<target>/loopwebm[-gui][.exe]
+/dist
+
+# --- Executables & native build artifacts (wherever they end up) ------------
+*.exe
+*.dll
+*.pdb
+*.lib
+*.exp
+*.so
+*.dylib
+*.a
+*.o
+*.obj
+*.dSYM/
+# Bare binaries copied out of dist/ or target/
+/loopwebm
+/loopwebm-gui
+
+# --- macOS app bundles & disk images ---------------------------------------
+*.app/
+*.dmg
+
+# --- Release / distribution packages ----------------------------------------
+*.zip
+*.tar.gz
+*.tgz
+*.tar.xz
+*.tar.zst
+*.7z
+*.msi
+*.msix
+*.deb
+*.rpm
+*.AppImage
+*.flatpak
+*.snap
+
+# --- macOS SDK drop folder (Apple licence: never commit) --------------------
+/docker/sdk/*
+!/docker/sdk/.gitkeep
+
+# --- Encoder leftovers -------------------------------------------------------
+*.webm.partial
+
+# --- OS / editor clutter -----------------------------------------------------
+.DS_Store
+Thumbs.db
