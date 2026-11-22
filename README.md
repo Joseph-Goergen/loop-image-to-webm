@@ -106,8 +106,29 @@ dist/macos-universal/                 # arm64 + x86_64 universal binaries and ap
   - On a Mac, `build.sh` runs `scripts/package-macos-sdk.sh` the first time. It packages the SDK from the Command Line Tools (`xcode-select --install`) into `docker/sdk/`.
   - On Linux or Windows, copy a `MacOSX<ver>.sdk.tar.xz` made on a Mac into `docker/sdk/`. Without one, the macOS targets are skipped and everything else still builds.
   - The SDK is git-ignored. Don't commit or redistribute it.
-- **macOS signing.** Binaries are ad-hoc signed with `rcodesign`; arm64 Macs require that. If you copy the app to another Mac via a download, Gatekeeper may need a right-click → Open the first time.
+- **macOS signing.** Binaries are ad-hoc signed (`rcodesign` in Docker, `codesign` on a Mac); arm64 Macs require that. The app is not notarized, so on another Mac a downloaded copy is blocked the first time. On macOS 15+, open it once, then click **Open Anyway** in System Settings → Privacy & Security. On macOS 14 and earlier, right-click → Open.
 - **Docker architecture.** The image runs natively on amd64 and arm64 Docker hosts, and cross-compiles to all six targets from either.
+- **Pinned toolchain.** Every download in `docker/Dockerfile` is pinned and verified: the base image by digest, Rust/rustup, llvm-mingw and rcodesign by SHA-256, libvpx and osxcross by git commit, and the LLVM apt repo by its signing-key fingerprint. To upgrade a component, change its version and hash together.
+
+## Releases
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds every platform and publishes a GitHub Release when you push a version tag:
+
+```bash
+# 1. bump `version` in Cargo.toml (the tag must match it), commit, then:
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+- **Linux + Windows** build in the Docker toolchain on an Ubuntu runner, exactly like `scripts/build.sh`.
+- **macOS** builds natively on a macOS runner with `scripts/build-macos-native.sh`. GitHub's macOS runners can't run Docker, and Apple's SDK must stay on Apple hardware. The script reads the pinned libvpx and Rust versions from `docker/Dockerfile`, so both paths build the same versions.
+- Both jobs run the test suite first. The release gets:
+  - **macOS:** `loopwebm-<version>-macos-universal.dmg` (open it and drag `LoopWebM.app` onto Applications) and `loopwebm-<version>-macos-universal.tar.gz` (the CLI on its own). Both are universal (Apple Silicon + Intel).
+  - **Windows:** a `.zip` per architecture with the app and CLI.
+  - **Linux:** a `.tar.gz` per architecture with the app and CLI.
+  - `SHA256SUMS`. Every download includes the libvpx licence.
+- Tags with a `-` (for example `v0.2.0-rc1`) become pre-releases. Running the workflow by hand from the Actions tab builds everything without publishing; the archives stay on the run as artifacts for 7 days.
+- `scripts/package-release.sh <version> <target>...` builds the same archives locally from `dist/` (the `.dmg` needs a Mac).
 
 ## Project layout
 
@@ -117,6 +138,9 @@ crates/loopwebm-core   frames.rs (wrap scroll + seam blur), color.rs (RGB→I420
 crates/loopwebm-cli    clap CLI
 crates/loopwebm-gui    eframe/egui desktop app
 docker/                toolchain Dockerfile, libvpx build script, sdk/ drop folder
-scripts/               build.sh, build.ps1, in-container-build.sh, package-macos-sdk.sh
+scripts/               build.sh, build.ps1, in-container-build.sh, package-macos-sdk.sh,
+                       build-macos-native.sh, package-release.sh
+.github/workflows      release.yml (tag -> GitHub Release)
+packaging/licenses     third-party licences shipped in release archives
 packaging/macos        Info.plist for the .app bundle
 ```

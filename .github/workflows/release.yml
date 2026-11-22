@@ -1,0 +1,157 @@
+# Build every platform and publish a GitHub Release.
+#
+#   git tag v0.2.0 && git push origin v0.2.0   -> builds + publishes release v0.2.0
+#   Actions tab -> Release -> "Run workflow"    -> builds only (archives kept as run artifacts)
+#
+# The tag must match the version in Cargo.toml. Tags containing "-" (v0.2.0-rc1)
+# are published as pre-releases.
+#
+# Linux + Windows build in the Docker toolchain (same as scripts/build.sh).
+# macOS builds natively on a macOS runner: GitHub's macOS runners can't run
+# Docker, and Apple's SDK must not leave Apple hardware or be published.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: v
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "v$crate" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $crate (expected v$crate)"
+              exit 1
+            fi
+            version="$GITHUB_REF_NAME"
+          else
+            version="v$crate-dev.${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version: $version"
+
+  linux-windows:
+    name: Linux + Windows (Docker)
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space for the toolchain image
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Test
+        run: ./scripts/build.sh --test
+      - name: Build
+        run: ./scripts/build.sh --target linux-amd64 --target linux-arm64 --target windows-amd64 --target windows-arm64
+      - name: Package
+        run: ./scripts/package-release.sh "$VERSION" linux-amd64 linux-arm64 windows-amd64 windows-arm64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux-windows
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS (native)
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install nasm
+        run: brew install nasm
+      - name: Test and build
+        run: ./scripts/build-macos-native.sh --test
+      - name: Package
+        run: ./scripts/package-release.sh "$VERSION" macos-universal
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-macos
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish release
+    needs: [version, linux-windows, macos]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release
+      - name: Checksums
+        working-directory: release
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create release
+        run: |
+          prerelease=()
+          [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
+          cat > notes.md <<'EOF'
+          ### Downloads
+
+          | Platform | File |
+          |---|---|
+          | macOS 11+ (Apple Silicon + Intel) | **App:** `loopwebm-*-macos-universal.dmg` · **CLI:** `loopwebm-*-macos-universal.tar.gz` |
+          | Windows x64 / ARM64 | `loopwebm-*-windows-amd64.zip` / `-windows-arm64.zip` (app + CLI) |
+          | Linux x64 / ARM64 (glibc 2.35+) | `loopwebm-*-linux-amd64.tar.gz` / `-linux-arm64.tar.gz` (app + CLI) |
+
+          #### Installing on macOS
+          Open the `.dmg` and drag **LoopWebM** onto **Applications**.
+
+          LoopWebM isn't notarized by Apple, so macOS blocks it the first time you open it:
+          - **macOS 15 (Sequoia) and later:** open the app once and click **Done** on the warning, then go to
+            **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to LoopWebM.
+          - **macOS 14 and earlier:** right-click (Control-click) the app → **Open** → **Open**.
+          - **Or in Terminal:** `xattr -dr com.apple.quarantine /Applications/LoopWebM.app`
+            (for the CLI: `xattr -d com.apple.quarantine loopwebm`).
+
+          You only need to do this once. Verify downloads against `SHA256SUMS`.
+          EOF
+          gh release create "$VERSION" release/* \
+            --verify-tag \
+            --title "LoopWebM $VERSION" \
+            --notes-file notes.md \
+            --generate-notes \
+            "${prerelease[@]}"
