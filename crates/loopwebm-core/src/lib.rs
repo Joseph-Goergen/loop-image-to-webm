@@ -256,6 +256,24 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "plane buffers too small")]
+    fn encoder_rejects_short_planes() {
+        let mut enc = encode::Vp9Encoder::new(&encode::EncoderConfig {
+            width: 16,
+            height: 16,
+            fps: 30,
+            crf: 31,
+            cpu_used: 8,
+            threads: 1,
+            kf_max_dist: 30,
+        })
+        .unwrap();
+        let mut frame = color::I420::new(16, 16);
+        frame.u.truncate(1);
+        let _ = enc.encode(Some(&frame), 0, true, |_| Ok(()));
+    }
+
+    #[test]
     fn libvpx_is_linked() {
         assert!(encode::vpx_version().starts_with('v'));
     }

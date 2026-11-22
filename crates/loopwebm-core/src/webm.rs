@@ -353,8 +353,9 @@ pub mod read {
             let (id, il) = vint(buf, pos, true)?;
             let (size, sl) = vint(buf, pos + il, false)?;
             let data_start = pos + il + sl;
-            let size = size as usize;
-            if data_start + size > end {
+            let size = usize::try_from(size).ok()?;
+            let data_end = data_start.checked_add(size)?;
+            if data_end > end || end > buf.len() {
                 return None;
             }
             out.push(Element { id: id as u32, data_start, size });
@@ -363,8 +364,23 @@ pub mod read {
         Some(out)
     }
 
-    pub fn uint(buf: &[u8], e: &Element) -> u64 {
-        buf[e.data_start..e.data_start + e.size].iter().fold(0, |a, &b| (a << 8) | b as u64)
+    /// Unsigned integer element (at most 8 bytes); `None` if it is longer.
+    pub fn uint(buf: &[u8], e: &Element) -> Option<u64> {
+        if e.size > 8 {
+            return None;
+        }
+        Some(buf[e.data_start..e.data_start + e.size].iter().fold(0, |a, &b| (a << 8) | b as u64))
+    }
+
+    /// Float element: 4 or 8 bytes (or 0 = 0.0) per the EBML spec.
+    pub fn float(buf: &[u8], e: &Element) -> Option<f64> {
+        let b = &buf[e.data_start..e.data_start + e.size];
+        match e.size {
+            0 => Some(0.0),
+            4 => Some(f32::from_be_bytes(b.try_into().ok()?) as f64),
+            8 => Some(f64::from_be_bytes(b.try_into().ok()?)),
+            _ => None,
+        }
     }
 }
 
@@ -389,7 +405,7 @@ pub fn probe(buf: &[u8]) -> Option<Probe> {
             INFO => {
                 for c in children(buf, e.data_start, e.data_start + e.size)? {
                     if c.id == DURATION {
-                        p.duration_ms = f64::from_be_bytes(buf[c.data_start..c.data_start + 8].try_into().ok()?);
+                        p.duration_ms = float(buf, &c)?;
                     }
                 }
             }
@@ -403,8 +419,8 @@ pub fn probe(buf: &[u8]) -> Option<Probe> {
                             VIDEO => {
                                 for v in children(buf, c.data_start, c.data_start + c.size)? {
                                     match v.id {
-                                        PIXEL_WIDTH => p.width = uint(buf, &v),
-                                        PIXEL_HEIGHT => p.height = uint(buf, &v),
+                                        PIXEL_WIDTH => p.width = uint(buf, &v)?,
+                                        PIXEL_HEIGHT => p.height = uint(buf, &v)?,
                                         _ => {}
                                     }
                                 }
@@ -417,6 +433,10 @@ pub fn probe(buf: &[u8]) -> Option<Probe> {
             CLUSTER => {
                 for b in children(buf, e.data_start, e.data_start + e.size)? {
                     if b.id == SIMPLE_BLOCK {
+                        // track number (vint) + 2-byte timecode + flags; we only write 1-byte track numbers.
+                        if b.size < 4 {
+                            return None;
+                        }
                         p.frames += 1;
                         if buf[b.data_start + 3] & 0x80 != 0 {
                             p.keyframes += 1;
@@ -488,5 +508,31 @@ mod tests {
         assert_eq!(kids[0].id, SEEK_HEAD);
         let ids: Vec<u32> = kids.iter().map(|e| e.id).collect();
         assert!(ids.contains(&CUES) && ids.contains(&INFO) && ids.contains(&TRACKS));
+    }
+
+    #[test]
+    fn probe_rejects_malformed_input_without_panicking() {
+        let mut w = WebmWriter::new(Cursor::new(vec![]), 64, 48, 30, 1, "test").unwrap();
+        for k in 0..40u64 {
+            w.write_frame(&[0x55; 9], k * 33, k % 10 == 0).unwrap();
+        }
+        let good = w.finish(40.0 * 33.0).unwrap().into_inner();
+        assert!(probe(&good).is_some());
+
+        // Every truncation and a sweep of single-byte corruptions must return
+        // Some/None, never panic.
+        for len in 0..good.len() {
+            let _ = probe(&good[..len]);
+        }
+        for i in 0..good.len() {
+            for v in [0x00u8, 0x01, 0x7F, 0x80, 0xFF] {
+                let mut bad = good.clone();
+                bad[i] = v;
+                let _ = probe(&bad);
+            }
+        }
+        // Huge declared sizes (8-byte vint near u64::MAX >> 8).
+        let _ = probe(&[0x1A, 0x45, 0xDF, 0xA3, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE]);
+        let _ = probe(&[0x18, 0x53, 0x80, 0x67, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
     }
 }

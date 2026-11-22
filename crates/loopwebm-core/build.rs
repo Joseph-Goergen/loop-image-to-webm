@@ -41,6 +41,13 @@ fn main() {
             dir.display()
         );
     }
+    // Recompile the shim whenever libvpx itself changes (e.g. a version upgrade):
+    // the shim bakes in VPX_ENCODER_ABI_VERSION from these headers, and a stale
+    // object linked against a newer libvpx fails with "ABI version mismatch".
+    for f in ["vpx_encoder.h", "vpx_codec.h", "vpx_image.h", "vp8cx.h"] {
+        println!("cargo:rerun-if-changed={}", include.join("vpx").join(f).display());
+    }
+    println!("cargo:rerun-if-changed={}", lib.join("libvpx.a").display());
 
     cc::Build::new()
         .file("src/vpx_shim.c")

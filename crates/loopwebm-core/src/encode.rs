@@ -39,7 +39,7 @@ fn cstr(p: *const c_char) -> String {
     unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
 }
 
-/// libvpx version string, e.g. "v1.15.2".
+/// libvpx version string, e.g. "v1.17.0".
 pub fn vpx_version() -> String {
     cstr(unsafe { lw_vpx_version() })
 }
@@ -106,10 +106,24 @@ impl Vp9Encoder {
         force_key: bool,
         mut sink: impl FnMut(Packet<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        if let Some(f) = frame {
+            // The C side reads exactly w*h luma and cw*ch bytes per chroma plane from
+            // these pointers, so the buffers must be at least that long (I420's fields
+            // are public, so this can't be assumed from the width/height alone).
+            let (cw, ch) = crate::color::chroma_size(self.width, self.height);
+            assert!(f.width == self.width && f.height == self.height, "frame size mismatch");
+            assert!(
+                f.y.len() >= self.width as usize * self.height as usize
+                    && f.u.len() >= cw * ch
+                    && f.v.len() >= cw * ch,
+                "I420 plane buffers too small for {}x{}",
+                self.width,
+                self.height
+            );
+        }
         let rc = unsafe {
             match frame {
                 Some(f) => {
-                    assert!(f.width == self.width && f.height == self.height, "frame size mismatch");
                     lw_enc_encode(self.ptr.as_ptr(), f.y.as_ptr(), f.u.as_ptr(), f.v.as_ptr(), pts, force_key as c_int)
                 }
                 None => lw_enc_encode(
